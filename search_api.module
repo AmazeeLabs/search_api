@@ -924,7 +924,9 @@ function search_api_field_update_field($field, $prior_field) {
  * multiplicity) of a property has changed.
  */
 function search_api_flush_caches() {
-  search_api_index_recalculate_fields();
+  // UBX-657 + UBX-657: Removed to avoid fields getting removed
+  // from index when this gets run with invalid caches
+  //search_api_index_recalculate_fields();
 }
 
 /**
