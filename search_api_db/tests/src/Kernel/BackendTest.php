@@ -133,6 +133,7 @@ class BackendTest extends KernelTestBase {
     $expected_fields = array(
       'body',
       'category',
+      'created',
       'id',
       'keywords',
       'name',
