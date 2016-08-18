@@ -1,0 +1,709 @@
+diff --git a/search_api_db/src/Plugin/search_api/backend/Database.php b/search_api_db/src/Plugin/search_api/backend/Database.php
+index 457593c..1323847 100644
+--- a/search_api_db/src/Plugin/search_api/backend/Database.php
++++ b/search_api_db/src/Plugin/search_api/backend/Database.php
+@@ -578,8 +578,7 @@ public function addIndex(IndexInterface $index) {
+ 
+     // If dealing with features or stale data or whatever, we might already have
+     // settings stored for this index. If we have, we should take care to only
+-    // change what is needed, so we don't save the server (potentially setting
+-    // it to "Overridden") unnecessarily.
++    // change what is needed, so we don't discard indexed data unnecessarily.
+     // The easiest way to do this is by just pretending the index was already
+     // present, but its fields were updated.
+     $this->fieldsUpdated($index);
+@@ -589,6 +588,25 @@ public function addIndex(IndexInterface $index) {
+    * {@inheritdoc}
+    */
+   public function updateIndex(IndexInterface $index) {
++    // Process field ID changes so they won't lead to reindexing.
++    $renames = $index->getFieldRenames();
++    if ($renames) {
++      $db_info = $this->getIndexDbInfo($index);
++      // We have to recreate "field_tables" from scratch in case field IDs got
++      // swapped between two (or more) fields.
++      $fields = array();
++      foreach ($db_info['field_tables'] as $field_id => $info) {
++        if (isset($renames[$field_id])) {
++          $field_id = $renames[$field_id];
++        }
++        $fields[$field_id] = $info;
++      }
++      if ($fields != $db_info['field_tables']) {
++        $db_info['field_tables'] = $fields;
++        $this->getKeyValueStore()->set($index->id(), $db_info);
++      }
++    }
++
+     // Check if any fields were updated and trigger a reindex if needed.
+     if ($this->fieldsUpdated($index)) {
+       $index->reindex();
+diff --git a/search_api_db/tests/src/Kernel/BackendTest.php b/search_api_db/tests/src/Kernel/BackendTest.php
+index 4b6b48b..be0b7ab 100644
+--- a/search_api_db/tests/src/Kernel/BackendTest.php
++++ b/search_api_db/tests/src/Kernel/BackendTest.php
+@@ -65,6 +65,7 @@ protected function checkBackendSpecificFeatures() {
+     $this->editServerMinChars();
+     $this->searchSuccessMinChars();
+     $this->checkUnknownOperator();
++    $this->checkFieldIdChanges();
+   }
+ 
+   /**
+@@ -369,6 +370,19 @@ protected function checkUnknownOperator() {
+   }
+ 
+   /**
++   * Checks that field ID changes are treated correctly (without re-indexing).
++   */
++  protected function checkFieldIdChanges() {
++    $this->getIndex()
++      ->renameField('type', 'foobar')
++      ->save();
++
++    $results = $this->buildSearch(NULL, array('foobar,item'))->execute();
++    $this->assertResults(array(1, 2, 3), $results, 'Search after renaming a field.');
++    $this->getIndex()->renameField('foobar', 'type')->save();
++  }
++
++  /**
+    * {@inheritdoc}
+    */
+   protected function checkSecondServer() {
+diff --git a/src/Entity/Index.php b/src/Entity/Index.php
+index c9c31d5..18424f9 100644
+--- a/src/Entity/Index.php
++++ b/src/Entity/Index.php
+@@ -719,6 +719,7 @@ public function renameField($old_field_id, $new_field_id) {
+ 
+     $this->fieldInstances[$new_field_id] = $this->fieldInstances[$old_field_id];
+     unset($this->fieldInstances[$old_field_id]);
++    $this->fieldInstances[$new_field_id]->setFieldIdentifier($new_field_id);
+ 
+     return $this;
+   }
+@@ -743,6 +744,13 @@ public function removeField($field_id) {
+   /**
+    * {@inheritdoc}
+    */
++  public function setFields(array $fields) {
++    $this->fieldInstances = $fields;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function getFields($include_server_defined = FALSE) {
+     if (!isset($this->fieldInstances)) {
+       $this->fieldInstances = array();
+@@ -795,6 +803,19 @@ public function getFulltextFields() {
+   /**
+    * {@inheritdoc}
+    */
++  public function getFieldRenames() {
++    $renames = array();
++    foreach ($this->getFields() as $field_id => $field) {
++      if ($field->getOriginalFieldIdentifier() != $field_id) {
++        $renames[$field->getOriginalFieldIdentifier()] = $field_id;
++      }
++    }
++    return $renames;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function getPropertyDefinitions($datasource_id) {
+     if (isset($datasource_id)) {
+       $datasource = $this->getDatasource($datasource_id);
+@@ -1265,6 +1286,9 @@ public function postSave(EntityStorageInterface $storage, $update = TRUE) {
+     catch (SearchApiException $e) {
+       watchdog_exception('search_api', $e);
+     }
++
++    // Reset the field instances so saved renames won't be reported anymore.
++    $this->fieldInstances = NULL;
+   }
+ 
+   /**
+diff --git a/src/Form/IndexFieldsForm.php b/src/Form/IndexFieldsForm.php
+index 81c91ba..98e5a45 100644
+--- a/src/Form/IndexFieldsForm.php
++++ b/src/Form/IndexFieldsForm.php
+@@ -324,8 +324,17 @@ protected function buildFieldsTable(array $fields) {
+     foreach ($fields as $key => $field) {
+       $build['fields'][$key]['#access'] = !$field->isHidden();
+ 
+-      $build['fields'][$key]['title']['#plain_text'] = $field->getLabel();
+-      $build['fields'][$key]['id']['#plain_text'] = $key;
++      $build['fields'][$key]['title'] = array(
++        '#type' => 'textfield',
++        '#default_value' => $field->getLabel() ? $field->getLabel() : $key,
++        '#required' => TRUE,
++      );
++      $build['fields'][$key]['id'] = array(
++        '#type' => 'textfield',
++        '#default_value' => $key,
++        '#required' => TRUE,
++      );
++
+       if ($field->getDescription()) {
+         $build['fields'][$key]['description'] = array(
+           '#type' => 'value',
+@@ -406,19 +415,71 @@ protected function actions(array $form, FormStateInterface $form_state) {
+   /**
+    * {@inheritdoc}
+    */
++  public function validateForm(array &$form, FormStateInterface $form_state) {
++    $field_values = $form_state->getValues()['fields'];
++    $new_ids = array();
++
++    foreach ($field_values as $field_id => $field) {
++      $new_id = $field['id'];
++      $new_ids[$new_id][] = $field_id;
++
++      // Check for reserved and other illegal field IDs.
++      if (Utility::isFieldIdReserved($new_id)) {
++        $args = array(
++          '%field_id' => $new_id,
++        );
++        $error = $this->t('%field_id is a reserved value and cannot be used as the machine name of a normal field.', $args);
++        $form_state->setErrorByName('fields][' . $field_id . '][id', $error);
++      }
++      elseif (preg_match('/^_+$/', $new_id)) {
++        $error = $this->t('Field IDs have to contain non-underscore characters.');
++        $form_state->setErrorByName('fields][' . $field_id . '][id', $error);
++      }
++      elseif (preg_match('/[^a-z0-9_]/', $new_id)) {
++        $error = $this->t('Field IDs must contain only lowercase letters, numbers and underscores.');
++        $form_state->setErrorByName('fields][' . $field_id . '][id', $error);
++      }
++    }
++
++    // Identify duplicates.
++    $has_duplicates = function (array $old_ids) {
++      return count($old_ids) > 1;
++    };
++    foreach (array_filter($new_ids, $has_duplicates) as $new_id => $old_ids) {
++      $args['%field_id'] = $new_id;
++      $error = $this->t('Field ID %field_id is used multiple times. Field IDs must be unique.', $args);
++      foreach ($old_ids as $field_id) {
++        $form_state->setErrorByName('fields][' . $field_id . '][id', $error);
++      }
++    }
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function submitForm(array &$form, FormStateInterface $form_state) {
+     $index = $this->entity;
+ 
+     // Store the fields configuration.
+-    $values = $form_state->getValues();
+-    $fields = $values['fields'];
+-    foreach ($index->getFields() as $field_id => $field) {
+-      if (isset($fields[$field_id])) {
+-        $field->setType($fields[$field_id]['type']);
+-        $field->setBoost($fields[$field_id]['boost']);
+-        $index->addField($field);
++    $fields = $index->getFields();
++    $field_values = $form_state->getValue('fields', array());
++    $new_fields = array();
++    foreach ($field_values as $field_id => $new_settings) {
++      if (!isset($fields[$field_id])) {
++        $args['%field_id'] = $field_id;
++        drupal_set_message($this->t('The field with ID %field_id does not exist anymore.', $args), 'warning');
++        continue;
+       }
++      $field = $fields[$field_id];
++      $field->setLabel($new_settings['title']);
++      $field->setType($new_settings['type']);
++      $field->setBoost($new_settings['boost']);
++      $field->setFieldIdentifier($new_settings['id']);
++
++      $new_fields[$new_settings['id']] = $field;
+     }
++
++    $index->setFields($new_fields);
+   }
+ 
+   /**
+diff --git a/src/IndexInterface.php b/src/IndexInterface.php
+index fed87d6..2068cd8 100644
+--- a/src/IndexInterface.php
++++ b/src/IndexInterface.php
+@@ -489,6 +489,21 @@ public function renameField($old_field_id, $new_field_id);
+   public function removeField($field_id);
+ 
+   /**
++   * Sets this index's fields.
++   *
++   * Usually, it's a better idea to add/rename/remove fields individually with
++   * the above methods. Use this method only if this is for some reason not
++   * easily possible (such as when renaming multiple fields at once might cause
++   * conflicts).
++   *
++   * @param \Drupal\search_api\Item\FieldInterface[] $fields
++   *   An array of fields for this index, keyed by field IDs.
++   *
++   * @return $this
++   */
++  public function setFields(array $fields);
++
++  /**
+    * Returns a list of all indexed fields of this index.
+    *
+    * @param bool $include_server_defined
+@@ -536,6 +551,14 @@ public function getFieldsByDatasource($datasource_id);
+   public function getFulltextFields();
+ 
+   /**
++   * Retrieves all field IDs that changed compared to the index's saved version.
++   *
++   * @return string[]
++   *   An associative array mapping old field IDs to the new ones.
++   */
++  public function getFieldRenames();
++
++  /**
+    * Retrieves the properties of one of this index's datasources.
+    *
+    * @param string|null $datasource_id
+diff --git a/src/Item/Field.php b/src/Item/Field.php
+index c755d8b..0b72279 100644
+--- a/src/Item/Field.php
++++ b/src/Item/Field.php
+@@ -39,6 +39,13 @@ class Field implements \IteratorAggregate, FieldInterface {
+   protected $fieldIdentifier;
+ 
+   /**
++   * The field's original identifier.
++   *
++   * @var string
++   */
++  protected $originalFieldIdentifier;
++
++  /**
+    * The field's datasource's ID.
+    *
+    * @var string|null
+@@ -169,7 +176,7 @@ class Field implements \IteratorAggregate, FieldInterface {
+    */
+   public function __construct(IndexInterface $index, $field_identifier) {
+     $this->index = $index;
+-    $this->fieldIdentifier = $field_identifier;
++    $this->fieldIdentifier = $this->originalFieldIdentifier = $field_identifier;
+   }
+ 
+   /**
+@@ -223,6 +230,28 @@ public function getFieldIdentifier() {
+   /**
+    * {@inheritdoc}
+    */
++  public function getOriginalFieldIdentifier() {
++    return $this->originalFieldIdentifier;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function setFieldIdentifier($field_id) {
++    $this->fieldIdentifier = $field_id;
++    return $this;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
++  public function wasRenamed() {
++    return $this->fieldIdentifier != $this->originalFieldIdentifier;
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function getSettings() {
+     $settings = array(
+       'label' => $this->getLabel(),
+diff --git a/src/Item/FieldInterface.php b/src/Item/FieldInterface.php
+index 7471097..5c993e8 100644
+--- a/src/Item/FieldInterface.php
++++ b/src/Item/FieldInterface.php
+@@ -46,6 +46,39 @@ public function setIndex(IndexInterface $index);
+   public function getFieldIdentifier();
+ 
+   /**
++   * Returns the original field identifier of this field.
++   *
++   * This will remember the original ID with which this field object was created
++   * even after its ID has been changed with
++   * \Drupal\search_api\Item\FieldInterface::setFieldIdentifier().
++   *
++   * @return string
++   *   The original identifier of this field.
++   */
++  public function getOriginalFieldIdentifier();
++
++  /**
++   * Sets a new field identifier for this field.
++   *
++   * @param string $field_id
++   *   The new identifier of the field.
++   *
++   * @return $this
++   *
++   * @internal Use \Drupal\search_api\IndexInterface::renameField() instead.
++   */
++  public function setFieldIdentifier($field_id);
++
++  /**
++   * Determines whether this field's identifier was changed in this request.
++   *
++   * @return bool
++   *   TRUE if the field identifier of this field object was changed after its
++   *   creation, FALSE otherwise.
++   */
++  public function wasRenamed();
++
++  /**
+    * Retrieves all settings encapsulated in this field as an array.
+    *
+    * @return array
+diff --git a/src/Plugin/search_api/processor/Highlight.php b/src/Plugin/search_api/processor/Highlight.php
+index 6405ee7..db4d3e3 100644
+--- a/src/Plugin/search_api/processor/Highlight.php
++++ b/src/Plugin/search_api/processor/Highlight.php
+@@ -23,7 +23,8 @@
+  *   label = @Translation("Highlight"),
+  *   description = @Translation("Adds a highlighted excerpt to results and highlights returned fields."),
+  *   stages = {
+- *     "postprocess_query" = 0
++ *     "pre_index_save" = 0,
++ *     "postprocess_query" = 0,
+  *   }
+  * )
+  */
+@@ -69,6 +70,27 @@ public function __construct(array $configuration, $plugin_id, array $plugin_defi
+   /**
+    * {@inheritdoc}
+    */
++  public function preIndexSave() {
++    parent::preIndexSave();
++
++    if (empty($this->configuration['exclude_fields'])) {
++      return;
++    }
++
++    $renames = $this->index->getFieldRenames();
++
++    $selected_fields = array_flip($this->configuration['exclude_fields']);
++    $renames = array_intersect_key($renames, $selected_fields);
++    if ($renames) {
++      $new_fields = array_keys(array_diff_key($selected_fields, $renames));
++      $new_fields = array_merge($new_fields, array_values($renames));
++      $this->configuration['exclude_fields'] = $new_fields;
++    }
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function defaultConfiguration() {
+     return array(
+       'prefix' => '<strong>',
+@@ -120,8 +142,8 @@ public function buildConfigurationForm(array $form, FormStateInterface $form_sta
+     // Exclude certain fulltext fields.
+     $fields = $this->index->getFields();
+     $fulltext_fields = array();
+-    foreach ($this->index->getFulltextFields() as $field) {
+-      $fulltext_fields[$field] = $fields[$field]->getLabel() . ' (' . $field . ')';
++    foreach ($this->index->getFulltextFields() as $field_id) {
++      $fulltext_fields[$field_id] = $fields[$field_id]->getLabel() . ' (' . $field_id . ')';
+     }
+     $form['exclude_fields'] = array(
+       '#type' => 'checkboxes',
+diff --git a/src/Plugin/search_api/processor/HtmlFilter.php b/src/Plugin/search_api/processor/HtmlFilter.php
+index 6d109c8..a8095b0 100644
+--- a/src/Plugin/search_api/processor/HtmlFilter.php
++++ b/src/Plugin/search_api/processor/HtmlFilter.php
+@@ -22,6 +22,7 @@
+  *   label = @Translation("HTML filter"),
+  *   description = @Translation("Strips HTML tags from fulltext fields and decodes HTML entities. Use this processor when indexing HTML data, e.g., node bodies for certain text formats. The processor also allows to boost (or ignore) the contents of specific elements."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -10,
+  *     "preprocess_query" = -10
+  *   }
+diff --git a/src/Plugin/search_api/processor/IgnoreCase.php b/src/Plugin/search_api/processor/IgnoreCase.php
+index 22ce11a..013d3d0 100644
+--- a/src/Plugin/search_api/processor/IgnoreCase.php
++++ b/src/Plugin/search_api/processor/IgnoreCase.php
+@@ -15,6 +15,7 @@
+  *   label = @Translation("Ignore case"),
+  *   description = @Translation("Makes searches case-insensitive on selected fields."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -20,
+  *     "preprocess_query" = -20
+  *   }
+diff --git a/src/Plugin/search_api/processor/IgnoreCharacters.php b/src/Plugin/search_api/processor/IgnoreCharacters.php
+index d4146ba..1f3185c 100644
+--- a/src/Plugin/search_api/processor/IgnoreCharacters.php
++++ b/src/Plugin/search_api/processor/IgnoreCharacters.php
+@@ -14,6 +14,7 @@
+  *   label = @Translation("Ignore characters"),
+  *   description = @Translation("Configure types of characters which should be ignored for searches."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -20,
+  *     "preprocess_query" = -20
+  *   }
+diff --git a/src/Plugin/search_api/processor/Stopwords.php b/src/Plugin/search_api/processor/Stopwords.php
+index fa05cfd..bd3e8f4 100644
+--- a/src/Plugin/search_api/processor/Stopwords.php
++++ b/src/Plugin/search_api/processor/Stopwords.php
+@@ -15,6 +15,7 @@
+  *   label = @Translation("Stopwords"),
+  *   description = @Translation("Allows you to define stopwords which will be ignored in searches. <strong>Caution:</strong> Only use after both 'Ignore case' and 'Tokenizer' have run."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -5,
+  *     "preprocess_query" = -2,
+  *   }
+diff --git a/src/Plugin/search_api/processor/Tokenizer.php b/src/Plugin/search_api/processor/Tokenizer.php
+index 2be40cd..a964db3 100644
+--- a/src/Plugin/search_api/processor/Tokenizer.php
++++ b/src/Plugin/search_api/processor/Tokenizer.php
+@@ -18,6 +18,7 @@
+  *   label = @Translation("Tokenizer"),
+  *   description = @Translation("Splits text into individual words for searching."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -6,
+  *     "preprocess_query" = -6
+  *   }
+diff --git a/src/Plugin/search_api/processor/Transliteration.php b/src/Plugin/search_api/processor/Transliteration.php
+index 91d6e4b..a276651 100644
+--- a/src/Plugin/search_api/processor/Transliteration.php
++++ b/src/Plugin/search_api/processor/Transliteration.php
+@@ -14,6 +14,7 @@
+  *   label = @Translation("Transliteration"),
+  *   description = @Translation("Makes searches insensitive to accents and other non-ASCII characters."),
+  *   stages = {
++ *     "pre_index_save" = 0,
+  *     "preprocess_index" = -20,
+  *     "preprocess_query" = -20
+  *   }
+diff --git a/src/Processor/FieldsProcessorPluginBase.php b/src/Processor/FieldsProcessorPluginBase.php
+index 1f31c1e..9a5faae 100644
+--- a/src/Processor/FieldsProcessorPluginBase.php
++++ b/src/Processor/FieldsProcessorPluginBase.php
+@@ -33,6 +33,11 @@
+  * run on:
+  * - testField()
+  * - testType()
++ *
++ * Processors extending this class should usually support the following stages:
++ * - pre_index_save
++ * - preprocess_index
++ * - preprocess_query
+  */
+ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements PluginFormInterface {
+ 
+@@ -44,18 +49,39 @@
+   /**
+    * {@inheritdoc}
+    */
++  public function preIndexSave() {
++    parent::preIndexSave();
++
++    if (!isset($this->configuration['fields'])) {
++      return;
++    }
++
++    $renames = $this->index->getFieldRenames();
++
++    $selected_fields = array_flip($this->configuration['fields']);
++    $renames = array_intersect_key($renames, $selected_fields);
++    if ($renames) {
++      $new_fields = array_keys(array_diff_key($selected_fields, $renames));
++      $new_fields = array_merge($new_fields, array_values($renames));
++      $this->configuration['fields'] = $new_fields;
++    }
++  }
++
++  /**
++   * {@inheritdoc}
++   */
+   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+     $fields = $this->index->getFields();
+     $field_options = array();
+     $default_fields = array();
+     if (isset($this->configuration['fields'])) {
+-      $default_fields = array_filter($this->configuration['fields']);
++      $default_fields = $this->configuration['fields'];
+     }
+     foreach ($fields as $name => $field) {
+       if ($this->testType($field->getType())) {
+         $field_options[$name] = Html::escape($field->getPrefixedLabel());
+         if (!isset($this->configuration['fields']) && $this->testField($name, $field)) {
+-          $default_fields[$name] = $name;
++          $default_fields[] = $name;
+         }
+       }
+     }
+diff --git a/src/Tests/IntegrationTest.php b/src/Tests/IntegrationTest.php
+index 37b9ff1..07c86c4 100644
+--- a/src/Tests/IntegrationTest.php
++++ b/src/Tests/IntegrationTest.php
+@@ -745,6 +745,8 @@ protected function addFieldsToIndex() {
+     }
+ 
+     $edit = array(
++      'fields[title][title]' => 'new_title',
++      'fields[title][id]' => 'new_id',
+       'fields[title][type]' => 'text',
+       'fields[title][boost]' => '21.0',
+       'fields[revision_log][type]' => 'search_api_test',
+@@ -755,13 +757,24 @@ protected function addFieldsToIndex() {
+     $index = $this->getIndex(TRUE);
+     $fields = $index->getFields();
+ 
+-    if ($this->assertTrue(!empty($fields['title']), 'type field is indexed.')) {
+-      $this->assertEqual($fields['title']->getType(), $edit['fields[title][type]'], 'title field type is text.');
+-      $this->assertEqual($fields['title']->getBoost(), $edit['fields[title][boost]'], 'title field boost value is 21.');
++    if ($this->assertTrue(!empty($fields['new_id']), 'title field is indexed.')) {
++      $this->assertEqual($fields['new_id']->getLabel(), $edit['fields[title][title]'], 'title field title is saved.');
++      $this->assertEqual($fields['new_id']->getFieldIdentifier(), $edit['fields[title][id]'], 'title field id value is saved.');
++      $this->assertEqual($fields['new_id']->getType(), $edit['fields[title][type]'], 'title field type is text.');
++      $this->assertEqual($fields['new_id']->getBoost(), $edit['fields[title][boost]'], 'title field boost value is 21.');
+     }
++
+     if ($this->assertTrue(!empty($fields['revision_log']), 'revision_log field is indexed.')) {
+       $this->assertEqual($fields['revision_log']->getType(), $edit['fields[revision_log][type]'], 'revision_log field type is search_api_test.');
+     }
++
++    // Reset field values to original.
++    $edit = array(
++      'fields[new_id][title]' => 'Title',
++      'fields[new_id][id]' => 'title',
++    );
++    $this->drupalPostForm($this->getIndexPath('fields'), $edit, $this->t('Save changes'));
++    $this->assertText($this->t('The changes were successfully saved.'));
+   }
+ 
+   /**
+@@ -895,7 +908,7 @@ protected function removeFieldsDependencies() {
+     $this->drupalGet($this->getIndexPath('fields'));
+     $this->assertResponse(200);
+     $this->assertNoText('field_link', 'The Link field was removed from the index.');
+-    $this->assertText('field_image', 'The Image field was not removed from the index.');
++    $this->assertFieldByName('fields[field_image][id]', 'field_image', 'The Image field was not removed from the index.');
+ 
+     $field_dependencies = \Drupal::config('search_api.index.' . $this->indexId)->get('dependencies.config');
+     $this->assertFalse(in_array('field.storage.node.field_link', (array) $field_dependencies), "The link field has been removed from the index's dependencies.");
+diff --git a/tests/src/Kernel/IndexChangesTest.php b/tests/src/Kernel/IndexChangesTest.php
+index 3d872f7..fbf95e0 100644
+--- a/tests/src/Kernel/IndexChangesTest.php
++++ b/tests/src/Kernel/IndexChangesTest.php
+@@ -401,6 +401,29 @@ public function testPropertyBundleRemoved() {
+   }
+ 
+   /**
++   * Tests correct behavior when a field ID is changed.
++   */
++  public function testFieldRenamed() {
++    $datasource_id = 'entity:entity_test_mulrev_changed';
++    $info = array(
++      'datasource_id' => $datasource_id,
++      'property_path' => 'name',
++    );
++    $field = Utility::createField($this->index, 'name', $info);
++    $this->index->addField($field);
++    $this->assertEquals(array(), $this->index->getFieldRenames());
++
++    $this->index->renameField('name', 'name1');
++    $this->assertEquals(array('name1' => $field), $this->index->getFields());
++    $this->assertEquals(array('name' => 'name1'), $this->index->getFieldRenames());
++
++    // Saving resets the field IDs.
++    $this->index->save();
++    $this->assertEquals(array(), $this->index->getFieldRenames());
++    $this->assertEquals('name1', $this->index->getField('name1')->getOriginalFieldIdentifier());
++  }
++
++  /**
+    * Retrieves the indexed items from the test backend.
+    *
+    * @return array
+diff --git a/tests/src/Unit/Plugin/Processor/FieldsProcessorPluginBaseTest.php b/tests/src/Unit/Plugin/Processor/FieldsProcessorPluginBaseTest.php
+index 9929cb9..7f49eb5 100644
+--- a/tests/src/Unit/Plugin/Processor/FieldsProcessorPluginBaseTest.php
++++ b/tests/src/Unit/Plugin/Processor/FieldsProcessorPluginBaseTest.php
+@@ -44,7 +44,8 @@ public function setUp() {
+     $this->index->expects($this->any())
+       ->method('status')
+       ->will($this->returnValue(TRUE));
+-    $fields = $this->getTestItem()[$this->itemIds[0]]->getFields();
++    $items = $this->getTestItem();
++    $fields = $items[$this->itemIds[0]]->getFields();
+     $this->index->expects($this->any())
+       ->method('getFields')
+       ->will($this->returnValue($fields));
+@@ -53,6 +54,25 @@ public function setUp() {
+   }
+ 
+   /**
++   * Tests whether the processor handles field ID changes correctly.
++   */
++  public function testFieldRenaming() {
++    $configuration['fields'] = array('text_field', 'float_field');
++    $this->processor->setConfiguration($configuration);
++
++    $this->index->method('getFieldRenames')
++      ->willReturn(array(
++        'text_field' => 'foobar',
++      ));
++
++    $this->processor->preIndexSave();
++
++    $fields = $this->processor->getConfiguration()['fields'];
++    sort($fields);
++    $this->assertEquals(array('float_field', 'foobar'), $fields);
++  }
++
++  /**
+    * Tests whether the default implementation of testType() works correctly.
+    */
+   public function testTestTypeDefault() {
+diff --git a/tests/src/Unit/Plugin/Processor/HighlightTest.php b/tests/src/Unit/Plugin/Processor/HighlightTest.php
+index 6c43393..754e204 100644
+--- a/tests/src/Unit/Plugin/Processor/HighlightTest.php
++++ b/tests/src/Unit/Plugin/Processor/HighlightTest.php
+@@ -59,6 +59,25 @@ protected function setUp() {
+   }
+ 
+   /**
++   * Tests whether the processor handles field ID changes correctly.
++   */
++  public function testFieldRenaming() {
++    $configuration['exclude_fields'] = array('body', 'title');
++    $this->processor->setConfiguration($configuration);
++
++    $this->index->method('getFieldRenames')
++      ->willReturn(array(
++        'title' => 'foobar',
++      ));
++
++    $this->processor->preIndexSave();
++
++    $fields = $this->processor->getConfiguration()['exclude_fields'];
++    sort($fields);
++    $this->assertEquals(array('body', 'foobar'), $fields);
++  }
++
++  /**
+    * Tests postprocessing with an empty result set.
+    */
+   public function testPostprocessSearchResultsWithEmptyResult() {

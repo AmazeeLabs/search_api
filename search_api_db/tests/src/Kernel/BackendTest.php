@@ -65,6 +65,7 @@ class BackendTest extends BackendTestBase {
     $this->editServerMinChars();
     $this->searchSuccessMinChars();
     $this->checkUnknownOperator();
+    $this->checkFieldIdChanges();
   }
 
   /**
@@ -366,6 +367,19 @@ class BackendTest extends BackendTestBase {
     catch (SearchApiException $e) {
       $this->assertTrue(TRUE, 'Unknown operator "!=" threw an exception.');
     }
+  }
+
+  /**
+   * Checks that field ID changes are treated correctly (without re-indexing).
+   */
+  protected function checkFieldIdChanges() {
+    $this->getIndex()
+      ->renameField('type', 'foobar')
+      ->save();
+
+    $results = $this->buildSearch(NULL, array('foobar,item'))->execute();
+    $this->assertResults(array(1, 2, 3), $results, 'Search after renaming a field.');
+    $this->getIndex()->renameField('foobar', 'type')->save();
   }
 
   /**
