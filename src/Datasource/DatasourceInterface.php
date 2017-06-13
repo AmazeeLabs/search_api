@@ -71,8 +71,9 @@ interface DatasourceInterface extends IndexPluginInterface {
    * @param \Drupal\Core\TypedData\ComplexDataInterface $item
    *   An object from this datasource.
    *
-   * @return string
-   *   The datasource-internal, unique ID of the item.
+   * @return string|null
+   *   The datasource-internal, unique ID of the item. Or NULL if the given item
+   *   is no valid item of this datasource.
    */
   public function getItemId(ComplexDataInterface $item);
 
@@ -218,9 +219,9 @@ interface DatasourceInterface extends IndexPluginInterface {
    *   implemented by this datasource; or NULL to retrieve all items at once.
    *
    * @return string[]|null
-   *   An array with datasource-specific (i.e., not prefixed with the datasource
-   *   ID) item IDs; or NULL if there are no more items for this and all
-   *   following pages.
+   *   An array with datasource-specific item IDs (that is, raw item IDs not
+   *   prefixed with the datasource ID); or NULL if there are no more items for
+   *   this and all following pages.
    */
   public function getItemIds($page = NULL);
 

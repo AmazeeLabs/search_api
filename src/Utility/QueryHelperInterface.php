@@ -23,7 +23,7 @@ interface QueryHelperInterface {
    * @return \Drupal\search_api\Query\QueryInterface
    *   A search query object to use.
    */
-  public function createQuery(IndexInterface $index, array $options = array());
+  public function createQuery(IndexInterface $index, array $options = []);
 
   /**
    * Adds a result set to the cache.
@@ -43,6 +43,15 @@ interface QueryHelperInterface {
    *   The results with the given search ID, if present; NULL otherwise.
    */
   public function getResults($search_id);
+
+  /**
+   * Retrieves all results data cached in this request.
+   *
+   * @return \Drupal\search_api\Query\ResultSetInterface[]
+   *   The results of all searches cached in this service, keyed by their
+   *   search IDs.
+   */
+  public function getAllResults();
 
   /**
    * Removes the result set with the given search ID from the cache.

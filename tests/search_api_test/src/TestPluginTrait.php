@@ -41,13 +41,13 @@ trait TestPluginTrait {
    * @param array $args
    *   (optional) The method arguments.
    */
-  protected function logMethodCall($method, array $args = array()) {
+  protected function logMethodCall($method, array $args = []) {
     $type = $this->getPluginType();
     $state = \Drupal::state();
 
     // Log call.
     $key = "search_api_test.$type.methods_called";
-    $methods_called = $state->get($key, array());
+    $methods_called = $state->get($key, []);
     $methods_called[] = $method;
     $state->set($key, $methods_called);
 
@@ -74,10 +74,24 @@ trait TestPluginTrait {
   }
 
   /**
+   * Retrieves a possible override set for the given method.
+   *
+   * @param string $method
+   *   The name of the method.
+   *
+   * @return callable|null
+   *   The method override to use, or NULL if none was set.
+   */
+  protected function getMethodOverride($method) {
+    $type = $this->getPluginType();
+    $key = "search_api_test.$type.method.$method";
+    return \Drupal::state()->get($key);
+  }
+
+  /**
    * Returns the plugin type of this object.
    *
-   * Equivalent to the last part of the namespace, i.e., without the module
-   * prefix.
+   * Equivalent to the last component of the namespace.
    *
    * @return string
    *   The "short" plugin type.

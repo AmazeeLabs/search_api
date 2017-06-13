@@ -95,19 +95,31 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
   public function preIndexSave() {
     parent::preIndexSave();
 
-    if (!isset($this->configuration['fields'])) {
+    if (empty($this->configuration['fields'])) {
       return;
     }
 
-    $renames = $this->index->getFieldRenames();
-
+    // Apply field ID changes to the fields selected for this processor.
     $selected_fields = array_flip($this->configuration['fields']);
+    $renames = $this->index->getFieldRenames();
     $renames = array_intersect_key($renames, $selected_fields);
     if ($renames) {
       $new_fields = array_keys(array_diff_key($selected_fields, $renames));
       $new_fields = array_merge($new_fields, array_values($renames));
       $this->configuration['fields'] = $new_fields;
     }
+
+    // Remove fields from the configuration that are no longer compatible with
+    // this processor (or no longer present on the index at all).
+    foreach ($this->configuration['fields'] as $i => $field_id) {
+      $field = $this->index->getField($field_id);
+      if ($field === NULL || !$this->testType($field->getType())) {
+        unset($this->configuration['fields'][$i]);
+      }
+    }
+    // Serialization might be problematic if the array indices aren't completely
+    // sequential.
+    $this->configuration['fields'] = array_values($this->configuration['fields']);
   }
 
   /**
@@ -115,8 +127,8 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
    */
   public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
     $fields = $this->index->getFields();
-    $field_options = array();
-    $default_fields = array();
+    $field_options = [];
+    $default_fields = [];
     if (isset($this->configuration['fields'])) {
       $default_fields = $this->configuration['fields'];
     }
@@ -129,12 +141,13 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
       }
     }
 
-    $form['fields'] = array(
+    $form['fields'] = [
       '#type' => 'checkboxes',
       '#title' => $this->t('Enable this processor on the following fields'),
+      '#description' => $this->t("Note: The Search API currently doesn't support per-field keywords processing, so this setting will be ignored when preprocessing search keywords. It is therefore usually recommended that you enable the processor for all fields that you intend to use as fulltext search fields, to avoid undesired consequences."),
       '#options' => $field_options,
       '#default_value' => $default_fields,
-    );
+    ];
 
     return $form;
   }
@@ -198,7 +211,7 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
       if ($value instanceof TextValueInterface) {
         $tokens = $value->getTokens();
         if ($tokens !== NULL) {
-          $new_tokens = array();
+          $new_tokens = [];
           foreach ($tokens as $token) {
             $token_text = $token->getText();
             $this->processFieldValue($token_text, $type);
@@ -305,7 +318,7 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
           // when one of the two values got removed. (Note that this check will
           // also catch empty strings.) Processors who need different behavior
           // have to override this method.
-          $between_operator = in_array($condition->getOperator(), array('BETWEEN', 'NOT BETWEEN'));
+          $between_operator = in_array($condition->getOperator(), ['BETWEEN', 'NOT BETWEEN']);
           if ($between_operator && count($value) < 2) {
             continue;
           }
@@ -356,7 +369,8 @@ abstract class FieldsProcessorPluginBase extends ProcessorPluginBase implements 
    *   TRUE if fields of that type should be processed, FALSE otherwise.
    */
   protected function testType($type) {
-    return $this->getDataTypeHelper()->isTextType($type, array('text', 'string'));
+    return $this->getDataTypeHelper()
+      ->isTextType($type, ['text', 'string']);
   }
 
   /**

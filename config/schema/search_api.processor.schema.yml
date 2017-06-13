@@ -28,6 +28,17 @@ plugin.plugin_configuration.search_api_processor.*:
 
 # Definitions for individual processors
 
+plugin.plugin_configuration.search_api_processor.hierarchy:
+  type: search_api.default_processor_configuration
+  label: 'Hierarchy processor configuration'
+  mapping:
+    fields:
+      type: sequence
+      label: 'Fields for which to add the hierarchy'
+      sequence:
+        type: string
+        label: 'Field ID'
+
 plugin.plugin_configuration.search_api_processor.highlight:
   type: search_api.default_processor_configuration
   label: 'Highlight processor configuration'
@@ -53,6 +64,9 @@ plugin.plugin_configuration.search_api_processor.highlight:
     highlight:
       type: string
       label: 'Defines whether returned fields should be highlighted (always/if returned/never).'
+    highlight_partial:
+      type: boolean
+      label: 'Whether matches in parts of words should be highlighted'
 
 plugin.plugin_configuration.search_api_processor.html_filter:
   type: search_api.fields_processor_configuration
@@ -93,6 +107,17 @@ plugin.plugin_configuration.search_api_processor.ignore_character:
             type: ignore
             label: 'Character set'
 
+plugin.plugin_configuration.search_api_processor.stemmer:
+  type: search_api.fields_processor_configuration
+  label: 'Stemmer processor configuration'
+  mapping:
+    exceptions:
+      type: sequence
+      label: 'Stemming exceptions'
+      sequence:
+        type: string
+        label: Exception
+
 plugin.plugin_configuration.search_api_processor.role_filter:
   type: search_api.default_processor_configuration
   label: 'Role filter processor configuration'
@@ -127,7 +152,7 @@ plugin.plugin_configuration.search_api_processor.tokenizer:
       label: 'Regular expression for spaces'
     ignorable:
       type: string
-      label: 'Regular expression for ignorables'
+      label: 'Regular expression for ignorable characters'
     overlap_cjk:
       type: integer
       label: 'Defines if simple CJK handling should be enabled.'

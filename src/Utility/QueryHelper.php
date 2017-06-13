@@ -64,13 +64,13 @@ class QueryHelper implements QueryHelperInterface {
     $this->moduleHandler = $moduleHandler;
     $this->parseModeManager = $parseModeManager;
     $this->results = new \SplObjectStorage();
-    $this->null = (object) array();
+    $this->null = (object) [];
   }
 
   /**
    * {@inheritdoc}
    */
-  public function createQuery(IndexInterface $index, array $options = array()) {
+  public function createQuery(IndexInterface $index, array $options = []) {
     $query = Query::create($index, $options);
 
     $query->setModuleHandler($this->moduleHandler);
@@ -84,13 +84,12 @@ class QueryHelper implements QueryHelperInterface {
    * {@inheritdoc}
    */
   public function addResults(ResultSetInterface $results) {
-    // @todo Create getter and setter methods for the search ID. See #2772829.
-    $search_id = $results->getQuery()->getOption('search id', '');
+    $search_id = $results->getQuery()->getSearchId();
     $request = $this->getCurrentRequest();
     if (!isset($this->results[$request])) {
-      $this->results[$request] = array(
+      $this->results[$request] = [
         $search_id => $results,
-      );
+      ];
     }
     else {
       // It's not possible to directly assign array values to an array inside of
@@ -114,6 +113,17 @@ class QueryHelper implements QueryHelperInterface {
       }
     }
     return NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getAllResults() {
+    $request = $this->getCurrentRequest();
+    if (isset($this->results[$request])) {
+      return $this->results[$request];
+    }
+    return [];
   }
 
   /**
