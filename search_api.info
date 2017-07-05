@@ -2,6 +2,7 @@ name = Search API
 description = "Provides a generic API for modules offering search capabilites."
 dependencies[] = entity
 core = 7.x
+version = "7.x-1.7"
 package = Search
 
 files[] = search_api.test
