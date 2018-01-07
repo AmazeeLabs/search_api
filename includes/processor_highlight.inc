@@ -233,7 +233,10 @@ class SearchApiHighlight extends SearchApiAbstractProcessor {
     if (empty($result['entity'])) {
       return $data;
     }
-    $wrapper = $this->index->entityWrapper($result['entity'], FALSE);
+        $entities = array($result['entity']);
+        $this->index->dataAlter($entities);
+        $result['entity'] = reset($entities);
+       $wrapper = $this->index->entityWrapper($result['entity'], TRUE);
     $wrapper->language($language->language);
     $extracted = search_api_extract_fields($wrapper, $needs_extraction, array('sanitize' => TRUE));
 
@@ -320,7 +323,7 @@ class SearchApiHighlight extends SearchApiAbstractProcessor {
    */
   protected function createExcerpt($text, array $keys) {
     // Prepare text by stripping HTML tags and decoding HTML entities.
-    $text = strip_tags(str_replace(array('<', '>'), array(' <', '> '), $text));
+    $text = strip_tags(str_replace(array('<', '>'), array(' <', '> '), htmlspecialchars_decode($text)));
     $text = ' ' . decode_entities($text);
 
     // Extract fragments around keywords.
